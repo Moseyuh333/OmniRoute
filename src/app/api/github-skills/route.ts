@@ -11,7 +11,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { searchGitHubSkills } from "@/lib/skills/githubCollector";
-import { buildErrorBody } from "@omniroute/open-sse/utils/error";
+import { buildErrorBody, sanitizeErrorMessage } from "@omniroute/open-sse/utils/error";
 
 export const dynamic = "force-dynamic";
 
@@ -50,8 +50,8 @@ export async function GET(request: NextRequest) {
       ...(errors.length > 0 ? { errors } : {}),
     });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return NextResponse.json({ error: msg, skills: [], total: 0 }, { status: 200 });
+    const msg = sanitizeErrorMessage(err instanceof Error ? err.message : String(err));
+    return NextResponse.json({ error: msg, skills: [], total: 0 }, { status: 500 });
   }
 }
 
