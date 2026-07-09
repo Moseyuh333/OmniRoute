@@ -11,6 +11,7 @@ _Living section — bullets land here as PRs merge into `release/v3.8.47` (paral
 ### ✨ New Features
 
 - **Provider/model param filters**: config-driven parameter denylist/allowlist per provider/model with auto-learn from upstream 400s (#6649 — thanks @ThongAccount, closes #6625)
+- **Skill Collector CLI detection**: new `GET /api/skills/collect/detect` + `POST /api/skills/collect/install` (and the `cli-skill-collector` agent skill) detect which coding CLIs (Claude Code, Codex, Cursor, Copilot, Cline, Hermes, OpenCode, etc.) are installed locally via `getCliRuntimeStatus()`, match them against GitHub agent-skill repos, and plan an install path per tool — replacing the standalone Skill Collector Python app. Both new routes and `GET/POST /api/github-skills` now require management auth (`requireManagementAuth()`) and are loopback-gated (`LOCAL_ONLY_API_PREFIXES` + `SPAWN_CAPABLE_PREFIXES`) since the detect route spawns a child process per candidate CLI tool (Hard Rules #15 + #17). The `omniroute_github_skills_install` MCP tool now reports the honest `action: "planned"` instead of `"installed"`, matching the REST route (#6294 — thanks @Moseyuh333)
 
 ### 🐛 Bug Fixes
 
