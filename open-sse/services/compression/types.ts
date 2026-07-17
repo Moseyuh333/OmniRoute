@@ -25,7 +25,7 @@ import type { QuantumLockConfig, QuantumLockStats } from "./quantumLock/quantumP
 export { ENGINE_IDS };
 
 export type CompressionMode =
-  "off" | "lite" | "standard" | "aggressive" | "ultra" | "rtk" | "omniglyph" | "stacked";
+  "off" | "lite" | "standard" | "aggressive" | "ultra" | "rtk" | "stacked";
 export type CavemanIntensity = "lite" | "full" | "ultra";
 export type RtkIntensity = "minimal" | "standard" | "aggressive";
 export type RtkRawOutputRetention = "never" | "failures" | "always";
@@ -38,9 +38,7 @@ export type CompressionEngineId =
   | "session-dedup"
   | "headroom"
   | "ccr"
-  | "llmlingua"
-  | "relevance"
-  | "omniglyph";
+  | "llmlingua";
 
 export interface CavemanRule {
   name: string;
@@ -69,6 +67,11 @@ export interface CavemanOutputModeConfig {
   enabled: boolean;
   intensity: CavemanIntensity;
   autoClarity: boolean;
+}
+
+export interface PonytailConfig {
+  enabled: boolean;
+  level: "lite" | "full" | "ultra";
 }
 
 export type OutputStyleLevel = "lite" | "full" | "ultra";
@@ -193,6 +196,8 @@ export interface CompressionConfig {
   ultra?: UltraConfig;
   /** Provider-delegated context editing (Claude/Anthropic only). */
   contextEditing?: ContextEditingConfig;
+  /** Ponytail (lazy-senior-dev mode): injected as a global system-prompt suffix. */
+  ponytail?: PonytailConfig;
   /** Per-engine opt-in toggles for the config panel. */
   engines: Record<string, EngineToggle>;
   /** Active combo preset id, or null if none selected. */
@@ -302,6 +307,11 @@ export interface CompressionResult {
   stats: CompressionStats | null;
 }
 
+export const DEFAULT_PONYTAIL_CONFIG: PonytailConfig = {
+  enabled: false,
+  level: "full",
+};
+
 export const DEFAULT_COMPRESSION_CONFIG: CompressionConfig = {
   enabled: false,
   defaultMode: "off",
@@ -319,6 +329,7 @@ export const DEFAULT_COMPRESSION_CONFIG: CompressionConfig = {
   ],
   engines: Object.fromEntries(ENGINE_IDS.map((id) => [id, { enabled: false }])),
   activeComboId: null,
+  ponytail: DEFAULT_PONYTAIL_CONFIG,
   ultraEngine: "heuristic",
   ultraSlmPrewarm: false,
 };

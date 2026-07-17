@@ -17,17 +17,12 @@ import {
   type AutoCategory,
   type AutoTier,
 } from "./suffixComposition";
-import { buildFamilyCandidateFilter, type ModelFamily } from "./modelFamily";
 import { getHiddenModelsByProvider } from "@/models";
-import { filterPaidOnlyCandidates } from "./paidModelFilter";
 
-/** #4235 Phase B: optional category/tier overlay for `auto/<category>:<tier>` combos.
- * #6453: optional `family` overlay for `auto/<family>` combos (e.g. `auto/glm`) —
- * mutually exclusive with category/tier, applied instead of them when present. */
+/** #4235 Phase B: optional category/tier overlay for `auto/<category>:<tier>` combos. */
 export interface AutoComboSpec {
   category?: AutoCategory;
   tier?: AutoTier;
-  family?: ModelFamily;
 }
 
 /** Minimal connection shape needed for virtual auto-combo factory */
@@ -137,8 +132,7 @@ function isChatAutoComboNoAuthProvider(providerDef: NoAuthProviderDefinition): b
 
 function getNoAuthCandidates(
   excludedProviders: Set<string>,
-  blockedProviders: Set<string>,
-  disabledNoAuthProviders: Set<string>
+  blockedProviders: Set<string>
 ): VirtualAutoComboCandidate[] {
   const registry = getProviderRegistry();
   const candidates: VirtualAutoComboCandidate[] = [];
@@ -151,15 +145,6 @@ function getNoAuthCandidates(
     if (
       blockedProviders.has(providerId) ||
       (typeof providerDef.alias === "string" && blockedProviders.has(providerDef.alias))
-    )
-      continue;
-    // #6557: a no-auth provider with its OWN provider_connections row explicitly
-    // disabled (isActive=false, the toggle on the main Providers grid card once an
-    // Account/fingerprint exists) must not be routed to, even though it has no
-    // entry in the separate `settings.blockedProviders` list.
-    if (
-      disabledNoAuthProviders.has(providerId) ||
-      (typeof providerDef.alias === "string" && disabledNoAuthProviders.has(providerDef.alias))
     )
       continue;
 
@@ -242,23 +227,12 @@ export async function createVirtualAutoCombo(
   variant: AutoVariant | undefined,
   spec?: AutoComboSpec
 ): Promise<VirtualAutoCombo> {
-  const [connections, disabledNoAuthConnections, settings] = await Promise.all([
+  const [connections, settings] = await Promise.all([
     getProviderConnections({ isActive: true }) as Promise<VirtualFactoryConn[]>,
-    // #6557: no-auth providers (opencode/mimocode/etc.) don't get an isActive
-    // filter applied above since their credential is synthetic, but a real
-    // provider_connections row CAN exist for them (created via "Add Account")
-    // and its own isActive=false must gate the auto-combo pool too — not just
-    // the separate settings.blockedProviders list.
-    getProviderConnections({ isActive: false }) as Promise<VirtualFactoryConn[]>,
     getSettings().catch(() => ({}) as Record<string, unknown>),
   ]);
   const blockedProviders = new Set(
     Array.isArray(settings.blockedProviders) ? (settings.blockedProviders as string[]) : []
-  );
-  const disabledNoAuthProviders = new Set(
-    disabledNoAuthConnections
-      .filter((conn) => conn.provider in NOAUTH_PROVIDERS)
-      .map((conn) => conn.provider)
   );
   const hiddenModelsMap = getHiddenModelsByProvider();
 
@@ -293,23 +267,8 @@ export async function createVirtualAutoCombo(
   }
 
   candidatePool.push(
-    ...getNoAuthCandidates(
-      new Set(validConnections.map((conn) => conn.provider)),
-      blockedProviders,
-      disabledNoAuthProviders
-    )
+    ...getNoAuthCandidates(new Set(validConnections.map((conn) => conn.provider)), blockedProviders)
   );
-
-  // #6512 (follow-up to #6328/#6495): when the operator opts into `hidePaidModels`,
-  // exclude paid-only backends from EVERY `auto/*` candidate pool — not just the
-  // `/v1/models` listing — so auto-routing never picks a model that will 402/403.
-  // If this empties the pool the existing graceful empty-pool path below handles it
-  // (consistent with the opt-in intent). Default OFF → pool unchanged.
-  const paidFilteredPool = filterPaidOnlyCandidates(candidatePool, settings.hidePaidModels === true);
-  if (paidFilteredPool !== candidatePool) {
-    candidatePool.length = 0;
-    candidatePool.push(...paidFilteredPool);
-  }
 
   if (candidatePool.length === 0) {
     log.warn("AUTO", "No connected providers with valid credentials for virtual auto-combo");
@@ -347,40 +306,26 @@ export async function createVirtualAutoCombo(
   // connected. Operators who want the old "never break routing, lose the bias"
   // behavior can opt back in via the env var below.
   let effectivePool = candidatePool;
-  // #6453: `auto/<family>` narrows by model family instead of category/tier. The
-  // two overlays are mutually exclusive on the spec (family takes precedence when
-  // both are somehow present, which callers never do in practice).
-  const candidateFilter = spec?.family
-    ? buildFamilyCandidateFilter(spec.family)
-    : spec
-      ? buildAutoCandidateFilter(spec.category, spec.tier)
-      : null;
+  const candidateFilter = spec ? buildAutoCandidateFilter(spec.category, spec.tier) : null;
   if (candidateFilter) {
     const narrowed = candidatePool.filter((c) =>
       candidateFilter({ provider: c.provider, model: c.model })
     );
-    const label = spec?.family
-      ? `auto/${spec.family}`
-      : `auto/${spec?.category ?? ""}${spec?.tier ? `:${spec.tier}` : ""}`;
     if (narrowed.length > 0) {
       effectivePool = narrowed;
     } else if (
-      !spec?.family &&
-      (process.env.OMNIROUTE_AUTO_FREE_FALLBACK_TO_FULL_POOL === "true" ||
-        process.env.OMNIROUTE_AUTO_FREE_FALLBACK_TO_FULL_POOL === "1")
+      process.env.OMNIROUTE_AUTO_FREE_FALLBACK_TO_FULL_POOL === "true" ||
+      process.env.OMNIROUTE_AUTO_FREE_FALLBACK_TO_FULL_POOL === "1"
     ) {
-      // Opt-in legacy behavior (category/tier only): warn loudly, then keep the full pool.
+      // Opt-in legacy behavior: warn loudly, then keep the full pool.
       log.warn(
         "AUTO",
-        `${label} matched no connected models; falling back to the full pool (OMNIROUTE_AUTO_FREE_FALLBACK_TO_FULL_POOL=true)`
+        `auto/${spec?.category ?? ""}${spec?.tier ? `:${spec.tier}` : ""} matched no connected models; falling back to the full pool (OMNIROUTE_AUTO_FREE_FALLBACK_TO_FULL_POOL=true)`
       );
     } else {
-      // Family combos always degrade to an empty pool when unavailable — a family
-      // is a hard identity constraint, not a soft optimization bias, so there is
-      // no sensible "fall back to the full pool" behavior for it.
       log.warn(
         "AUTO",
-        `${label} matched no connected models; returning an empty pool.${spec?.family ? "" : ' Set OMNIROUTE_AUTO_FREE_FALLBACK_TO_FULL_POOL=true to restore the legacy "use full pool" behavior.'}`
+        `auto/${spec?.category ?? ""}${spec?.tier ? `:${spec.tier}` : ""} matched no connected models; returning an empty pool. Set OMNIROUTE_AUTO_FREE_FALLBACK_TO_FULL_POOL=true to restore the legacy "use full pool" behavior.`
       );
       effectivePool = [];
     }
@@ -410,6 +355,12 @@ export async function createVirtualAutoCombo(
     case "lkgp":
       // LKGP is default for all auto variants, this variant just explicitly names it.
       // Use default weights.
+      break;
+    case "chaos":
+      // Chaos mode: select top-N most stable models and fan them out in parallel
+      // (strategy "fusion"). Prioritize health + stability via chaos-mode pack.
+      weights = { ...MODE_PACKS["chaos-mode"] };
+      explorationRate = 0; // no exploration — only the proven-stable set
       break;
     case undefined: // Default auto
       // Use default weights
@@ -444,6 +395,11 @@ export async function createVirtualAutoCombo(
     weight: 1,
     label: candidate.provider,
   }));
+  // Chaos mode fans out to the top-N most stable models in parallel. We cap the
+  // panel size so a single IDE request doesn't fan out to dozens of providers.
+  const isChaos = variant === "chaos";
+  const CHAOS_MAX_PANEL = 5;
+  const chaosModels = isChaos ? models.slice(0, CHAOS_MAX_PANEL) : models;
   const autoConfig = {
     candidatePool: providerPool,
     weights,
@@ -457,14 +413,27 @@ export async function createVirtualAutoCombo(
     id: `virtual-auto-${variant || "default"}`,
     name: `Auto ${variant || "Default"}`,
     type: "auto",
-    strategy: "auto",
-    models,
+    strategy: isChaos ? "fusion" : "auto",
+    models: chaosModels,
     candidatePool: providerPool,
     weights,
     explorationRate,
     routerStrategy,
     autoConfig,
-    config: { auto: autoConfig },
+    // For chaos, stash the panel size + a flag so downstream handlers can detect
+    // the broadcast mode and stream each panel model back to IDEs that opt in.
+    config: {
+      auto: autoConfig,
+      ...(isChaos
+        ? {
+            chaos: {
+              enabled: true,
+              panelSize: chaosModels.length,
+              judgeModel: chaosModels[0]?.model,
+            },
+          }
+        : {}),
+    },
     advertisedContextLength: advertisedLimits.contextLength,
     advertisedMaxOutputTokens: advertisedLimits.maxOutputTokens,
   };
