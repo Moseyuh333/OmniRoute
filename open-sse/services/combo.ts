@@ -145,7 +145,7 @@ import {
   waitForCooldownAwareRetry,
 } from "../../src/sse/services/cooldownAwareRetry.ts";
 import { handleFusionChat, type FusionTuning } from "./fusion.ts";
-import { dispatchChaosFromCombo } from "./autoCombo/chaosEngine.ts";
+import { dispatchChaosFromCombo, type ChaosTuning } from "./autoCombo/chaosEngine.ts";
 import { handlePipelineChat, type PipelineStep } from "./pipeline.ts";
 import {
   TRANSIENT_FOR_SEMAPHORE,
