@@ -12,8 +12,6 @@ interface ScienceConfig {
   evidenceLevel: EvidenceLevel;
   maxTokenBudget: number;
   requireCitations: boolean;
-  allowedDomains: string[];
-  blockedDomains: string[];
 }
 
 const DEFAULT_CONFIG: ScienceConfig = {
@@ -21,8 +19,6 @@ const DEFAULT_CONFIG: ScienceConfig = {
   evidenceLevel: "citations",
   maxTokenBudget: 4096,
   requireCitations: true,
-  allowedDomains: [],
-  blockedDomains: [],
 };
 
 export default function ScienceModePage() {
@@ -51,23 +47,19 @@ export default function ScienceModePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(config),
       });
-      if (!response.ok) throw new Error("Failed to save");
-      setStatus("Science mode settings saved.");
+      if (!response.ok) throw new Error("Save failed");
+      setStatus(t("scienceSaved"));
     } catch {
-      setStatus("Save failed.");
+      setStatus(t("scienceSaveError"));
     } finally {
       setSaving(false);
     }
   };
 
-  if (loading) return <p className="text-sm text-text-muted">Loading…</p>;
+  if (loading) return <p className="text-sm text-text-muted">{t("loading")}</p>;
 
   return (
-    <Card
-      title="Science Mode"
-      subtitle="Controlled scientific reasoning with evidence"
-      icon="science"
-    >
+    <Card title={t("scienceMode")} subtitle={t("scienceSubtitle")} icon="science">
       <div className="space-y-5">
         <div className="flex gap-4">
           <label className="flex items-center gap-2">
@@ -78,7 +70,7 @@ export default function ScienceModePage() {
               checked={config.mode === "off"}
               onChange={() => setConfig({ ...config, mode: "off" })}
             />
-            Off
+            {t("off")}
           </label>
           <label className="flex items-center gap-2">
             <input
@@ -88,7 +80,7 @@ export default function ScienceModePage() {
               checked={config.mode === "on"}
               onChange={() => setConfig({ ...config, mode: "on" })}
             />
-            On
+            {t("on")}
           </label>
         </div>
 
@@ -96,7 +88,9 @@ export default function ScienceModePage() {
           <>
             <div className="grid gap-3 md:grid-cols-2">
               <div>
-                <label className="block text-sm font-medium text-text-main">Evidence Level</label>
+                <label className="block text-sm font-medium text-text-main">
+                  {t("evidenceLevel")}
+                </label>
                 <select
                   className="w-full rounded border border-border bg-bg px-3 py-2.5 text-text-main"
                   value={config.evidenceLevel}
@@ -107,13 +101,15 @@ export default function ScienceModePage() {
                     })
                   }
                 >
-                  <option value="none">No evidence required</option>
-                  <option value="citations">Citation links only</option>
-                  <option value="citations+references">Citations + references</option>
+                  <option value="none">{t("evidenceNone")}</option>
+                  <option value="citations">{t("evidenceCitations")}</option>
+                  <option value="citations+references">{t("evidenceCitationsAndRefs")}</option>
                 </select>
               </div>
               <div>
-                <label className="block text-sm font-medium text-text-main">Max Token Budget</label>
+                <label className="block text-sm font-medium text-text-main">
+                  {t("maxTokenBudget")}
+                </label>
                 <input
                   type="number"
                   min={1024}
@@ -136,7 +132,7 @@ export default function ScienceModePage() {
                 checked={config.requireCitations}
                 onChange={(e) => setConfig({ ...config, requireCitations: e.target.checked })}
               />
-              <span className="text-sm text-text-main">Require citations in responses</span>
+              <span className="text-sm text-text-main">{t("requireCitations")}</span>
             </label>
 
             <div className="flex gap-2">
@@ -145,7 +141,7 @@ export default function ScienceModePage() {
                 onClick={save}
                 disabled={saving}
               >
-                {saving ? "Saving…" : "Save settings"}
+                {saving ? t("saving") : t("saveSettings")}
               </button>
               {status && <span className="text-sm text-text-muted">{status}</span>}
             </div>
