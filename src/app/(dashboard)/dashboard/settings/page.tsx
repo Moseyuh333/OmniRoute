@@ -10,6 +10,7 @@ const LEGACY_TAB_ROUTES: Record<string, string> = {
   general: "/dashboard/settings/general",
   resilience: "/dashboard/settings/resilience",
   routing: "/dashboard/settings/routing",
+  science: "/dashboard/settings/science",
   security: "/dashboard/settings/security",
   sidebar: "/dashboard/settings/sidebar",
 };

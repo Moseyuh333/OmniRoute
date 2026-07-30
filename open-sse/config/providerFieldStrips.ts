@@ -8,6 +8,7 @@
 // untouched when the feature is off — this generic strip covers that case.
 export const KNOWN_OFFENDING_FIELDS: readonly string[] = [
   "reasoning_budget",
+  "reasoning_effort",
   "chat_template",
   "reasoning_content",
   "context_management",
@@ -63,5 +64,8 @@ export function stripGroqUnsupportedFields<T extends Record<string, unknown>>(bo
       return m;
     });
   }
+  // Groq also rejects provider-specific unsupported fields that have been
+  // passed through when a strict endpoint is the target.
+  if (typeof next.reasoning_budget === "number") delete next.reasoning_budget;
   return next as T;
 }
