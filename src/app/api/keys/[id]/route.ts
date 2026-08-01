@@ -87,6 +87,7 @@ export async function PATCH(request, { params }) {
       dailyUsageLimitUsd,
       weeklyUsageLimitUsd,
       chaosModeEnabled,
+      reasoningEffort,
     } = validation.data;
 
     const payload: Parameters<typeof updateApiKeyPermissions>[1] = {};
@@ -114,6 +115,7 @@ export async function PATCH(request, { params }) {
     if (dailyUsageLimitUsd !== undefined) payload.dailyUsageLimitUsd = dailyUsageLimitUsd;
     if (weeklyUsageLimitUsd !== undefined) payload.weeklyUsageLimitUsd = weeklyUsageLimitUsd;
     if (chaosModeEnabled !== undefined) payload.chaosModeEnabled = chaosModeEnabled;
+    if (reasoningEffort !== undefined) payload.reasoningEffort = reasoningEffort;
 
     const updated = await updateApiKeyPermissions(id, payload);
     if (!updated) {

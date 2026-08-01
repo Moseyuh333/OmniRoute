@@ -26,6 +26,7 @@ export const createKeySchema = z.object({
   dailyUsageLimitUsd: z.coerce.number().min(0).optional().nullable(),
   weeklyUsageLimitUsd: z.coerce.number().min(0).optional().nullable(),
   chaosModeEnabled: z.boolean().optional(),
+  reasoningEffort: z.enum(["low", "medium", "high"]).optional().nullable(),
   scopes: z.array(z.string().trim().min(1).max(64)).max(32).optional(),
 });
 
@@ -112,10 +113,11 @@ export const updateKeyPermissionsSchema = z
     dailyUsageLimitUsd: z.coerce.number().min(0).optional().nullable(),
     weeklyUsageLimitUsd: z.coerce.number().min(0).optional().nullable(),
     chaosModeEnabled: z.boolean().optional(),
+    reasoningEffort: z.enum(["low", "medium", "high"]).optional().nullable(),
   })
   .superRefine((value, ctx) => {
-    if (
-      value.name === undefined &&
+  if (
+    value.name === undefined &&
       value.allowedModels === undefined &&
       value.allowedCombos === undefined &&
       value.allowedConnections === undefined &&

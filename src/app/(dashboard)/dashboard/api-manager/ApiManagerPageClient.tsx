@@ -26,6 +26,7 @@ import { extractApiErrorMessage } from "@/shared/http/apiErrorMessage";
 import { hasProviderQuotaBypassScope } from "@/shared/constants/apiKeyPolicyScopes";
 import { UsageLimitSettings } from "./components/UsageLimitSettings";
 import { ChaosModeAccessToggle } from "./components/ChaosModeAccessToggle";
+import { ReasoningEffortSelector } from "./components/ReasoningEffortSelector";
 import { BypassProviderQuotaToggle } from "./components/BypassProviderQuotaToggle";
 import ReasoningRoutingRules from "@/shared/components/ReasoningRoutingRules";
 
@@ -1739,6 +1740,7 @@ const PermissionsModal = memo(function PermissionsModal({
     apiKey?.allowUsageCommand === true
   );
   const [chaosModeEnabled, setChaosModeEnabled] = useState(apiKey?.chaosModeEnabled === true);
+  const [reasoningEffort, setReasoningEffort] = useState<"low" | "medium" | "high" | null>(apiKey?.reasoningEffort as "low" | "medium" | "high" | null);
   const [usageLimitEnabled, setUsageLimitEnabled] = useState(apiKey?.usageLimitEnabled === true);
   const [dailyUsageLimitUsd, setDailyUsageLimitUsd] = useState(
     typeof apiKey?.dailyUsageLimitUsd === "number" && apiKey.dailyUsageLimitUsd > 0
@@ -1984,6 +1986,7 @@ const PermissionsModal = memo(function PermissionsModal({
     blockedClaudeCodeFamilies,
     initialBlockedModels,
     chaosModeEnabled,
+    reasoningEffort,
     apiKey?.scopes,
     t,
   ]);
@@ -2575,6 +2578,12 @@ const PermissionsModal = memo(function PermissionsModal({
         <ChaosModeAccessToggle
           enabled={chaosModeEnabled}
           onToggle={() => setChaosModeEnabled((prev) => !prev)}
+        />
+
+        {/* Per-Key Reasoning Effort */}
+        <ReasoningEffortSelector
+          value={reasoningEffort}
+          onChange={setReasoningEffort}
         />
 
         {/* Advanced Provider Quota Policy Override */}
