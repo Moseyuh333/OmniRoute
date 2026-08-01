@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSettings, updateSettings } from "@/lib/db/settings";
+import { invalidateScienceConfigCache } from "@/lib/science/scienceModePolicy";
 import { isAuthenticated } from "@/shared/utils/apiAuth";
 import { z } from "zod";
 import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
@@ -67,6 +68,8 @@ export async function PATCH(request: NextRequest) {
     if (body.requireCitations !== undefined) updates.requireCitations = body.requireCitations;
 
     await updateSettings({ science: updates });
+    // Invalidate the in-process config cache so chat handlers pick up the new policy.
+    invalidateScienceConfigCache();
     return NextResponse.json({ ok: true, ...updates });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });

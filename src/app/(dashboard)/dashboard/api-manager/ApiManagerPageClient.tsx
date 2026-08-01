@@ -1986,7 +1986,6 @@ const PermissionsModal = memo(function PermissionsModal({
     blockedClaudeCodeFamilies,
     initialBlockedModels,
     chaosModeEnabled,
-    reasoningEffort,
     apiKey?.scopes,
     t,
   ]);

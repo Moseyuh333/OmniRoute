@@ -92,6 +92,7 @@ import {
 } from "./reasoningRouting";
 import { createVirtualAutoCombo, resolveAutoRoutingState } from "./autoRouting";
 import { getComboFailureLogError } from "./comboFailureLogging";
+import { getActiveScienceConfig, type ScienceConfig, buildScienceSystemPrompt } from "@/lib/science/scienceModePolicy";
 
 // Pipeline integration — wired modules
 import { classify429FromError, type FailureKind } from "@/shared/utils/classify429";
@@ -573,6 +574,41 @@ export async function handleChat(
     logTag: "Hook model override",
     log,
   }));
+
+  // === Science Mode — inject evidence-aware system instruction ===
+  // Applies to the outgoing chat body so models include citations/references
+  // per the admin-configured ScienceMode policy. Non-blocking: failure falls
+  // back to default behavior (pass-through) so chat never breaks.
+  const scienceConfig = await getActiveScienceConfig();
+  if (scienceConfig.mode === "on" && body && typeof body === "object") {
+    try {
+      const scienceSystem = buildScienceSystemPrompt(scienceConfig);
+      const existingSystem = Array.isArray(body.messages)
+        ? body.messages.find((m: any) => m.role === "system")
+        : undefined;
+      if (existingSystem) {
+        existingSystem.content = `${existingSystem.content}\n\n${scienceSystem}`;
+      } else {
+        (body as any).messages = [
+          { role: "system", content: scienceSystem },
+          ...((body as any).messages ?? []),
+        ];
+      }
+      // Inject token budget as max_tokens when provided
+      if (scienceConfig.maxTokenBudget && typeof scienceConfig.maxTokenBudget === "number") {
+        (body as any).max_tokens = Math.min(
+          scienceConfig.maxTokenBudget,
+          (body as any).max_tokens ?? Infinity
+        );
+        (body as any).max_completion_tokens = Math.min(
+          scienceConfig.maxTokenBudget,
+          (body as any).max_completion_tokens ?? Infinity
+        );
+      }
+    } catch (e) {
+      log.warn("scienceMode", `Science mode injection skipped: ${e}`);
+    }
+  }
 
   // Short-circuit if a hook returned a direct response
   if (hookResponse) {
