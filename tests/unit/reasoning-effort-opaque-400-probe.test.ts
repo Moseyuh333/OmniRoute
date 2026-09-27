@@ -5,6 +5,8 @@ import {
   getLearnedReasoningEffort,
   nextProbeReasoningEffort,
   recordLearnedProbeReasoningEffort,
+  reasoningEffortProbeEnabled,
+  recordLearnedReasoningEffort,
   parseReasoningEffortEnum,
   __test_resetLearnedReasoningEffortCaps,
 } from "../../open-sse/services/learnedReasoningEffortCaps.ts";
@@ -15,7 +17,10 @@ import {
 // opaque `{"type":"server_error","message":"Streaming response failed: [400]
 // Invalid request parameters"}` wrapped in the SSE error frame — no list, so
 // `parseReasoningEffortEnum` has nothing to learn from and the request 400s on
-// every attempt.
+// every attempt. The probe is opt-in per provider
+// (OMNIROUTE_REASONING_EFFORT_PROBE_PROVIDERS) because such a body gives no
+// signal that the effort was the cause, so it is applied only where an operator
+// has said this gateway is known to answer opaquely on the effort.
 const OPAQUE_400_BODY = JSON.stringify({
   error: {
     param: "",
@@ -44,12 +49,22 @@ class SimpleExecutor extends BaseExecutor {
   }
 }
 
+// The probe is opt-in per provider (see reasoningEffortProbeEnabled), and
+// Copilot's review is why: an opaque 4xx gives no signal that the effort was the
+// cause, so a 2xx on the probe could mask an unrelated validation failure and
+// pin an unproven cap. The end-to-end tests below enable it for this fake
+// provider; the gate tests that follow then turn it back off explicitly.
+const PROBE_ENV_KEY = "OMNIROUTE_REASONING_EFFORT_PROBE_PROVIDERS";
+const savedProbeEnv = process.env[PROBE_ENV_KEY];
 beforeEach(() => {
   __test_resetLearnedReasoningEffortCaps();
+  process.env[PROBE_ENV_KEY] = PROVIDER;
 });
 
 after(() => {
   __test_resetLearnedReasoningEffortCaps();
+  if (savedProbeEnv === undefined) delete process.env[PROBE_ENV_KEY];
+  else process.env[PROBE_ENV_KEY] = savedProbeEnv;
 });
 
 /** Mock fetch: first call 400s with `rejectBody`, later calls answer 200. */
@@ -67,6 +82,26 @@ function mockFetchOnce(capturedBodies: Record<string, unknown>[], rejectBody: st
       headers: { "Content-Type": "application/json" },
     });
   };
+}
+
+/** Run `fn` with env overrides applied, then restore the previous values. */
+async function withEnv<T>(
+  vars: Record<string, string | undefined>,
+  fn: () => Promise<T>
+): Promise<T> {
+  const saved = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
+  for (const [k, v] of Object.entries(vars)) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+  try {
+    return await fn();
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
 }
 
 async function withMockedFetch<T>(fn: () => Promise<T>): Promise<T> {
@@ -105,17 +140,31 @@ test("the probe declines at the floor and on values outside the scale", () => {
 
 // ── recordLearnedProbeReasoningEffort ──────────────────────────────────────
 
-test("a successful probe learns the whole proven prefix, not just the probed tier", () => {
+test("a successful probe learns ONLY the tier it proved, never the tiers below it", () => {
+  // One accepted probe is proof about one value. A model can answer `high` and
+  // still refuse `low` (the learned-cap tests already cover sparse sets such as
+  // {high,max}), so the tiers below the probe stay unproven and unlearned.
   const learned = recordLearnedProbeReasoningEffort(PROVIDER, MODEL, "high");
-  assert.deepEqual([...(learned as Set<string>)].sort(), ["high", "low", "medium"]);
-  const stored = getLearnedReasoningEffort(PROVIDER, MODEL);
-  assert.equal((stored as unknown as Set<string>).has("xhigh"), false, "xhigh stays refused");
-  assert.equal((stored as unknown as Set<string>).has("none"), false, "none was not proven");
+  assert.deepEqual([...(learned as Set<string>)], ["high"]);
+  const stored = getLearnedReasoningEffort(PROVIDER, MODEL) as unknown as Set<string>;
+  assert.equal(stored.has("medium"), false, "medium was never probed");
+  assert.equal(stored.has("low"), false, "low was never probed — a sparse set is real");
+  assert.equal(stored.has("xhigh"), false, "xhigh stayed refused");
+  assert.equal(stored.has("none"), false, "none was not proven");
 });
 
 test("a probe at the floor learns only low", () => {
   const learned = recordLearnedProbeReasoningEffort(PROVIDER, MODEL, "low");
   assert.deepEqual([...(learned as Set<string>)], ["low"]);
+});
+
+test("a refused 4xx on a HIGHER tier is not re-learned by a lower probe", () => {
+  // xhigh 400s, the probe at high is answered. The accepted set is then exactly
+  // {high} — xhigh stays out, which is the whole point of learning a ceiling
+  // rather than a floor.
+  recordLearnedReasoningEffort(PROVIDER, MODEL, ["high"]);
+  const stored = getLearnedReasoningEffort(PROVIDER, MODEL) as unknown as Set<string>;
+  assert.deepEqual([...stored].sort(), ["high"]);
 });
 
 test("probing an unknown provider+model, or an unknown tier, learns nothing", () => {
@@ -285,3 +334,91 @@ test("the probe rewrites only the effort, on the Responses carrier too", async (
     "a carrier the request did not use is not invented"
   );
 });
+
+// ── the opt-in gate ────────────────────────────────────────────────────────
+// These exist because of review: an opaque 4xx names no enum, so nothing in it
+// says the *effort* was the cause. Applying the probe to every such 400 would
+// re-POST any unrelated validation failure (context too long, malformed tool
+// schema) with a different body, and a 2xx on that probe would mask the real
+// error while recording a reasoning cap nothing was ever proven against.
+
+test("the probe is off by default, so an opaque 400 is surfaced unchanged", async () => {
+  const executor = new SimpleExecutor();
+  const captured: Record<string, unknown>[] = [];
+
+  await withMockedFetch(async () => {
+    mockFetchOnce(captured, OPAQUE_400_BODY);
+    const result = await withEnv({ [PROBE_ENV_KEY]: undefined }, () =>
+      executor.execute({
+        model: MODEL,
+        body: { reasoning_effort: "xhigh" },
+        stream: false,
+        credentials: CREDENTIALS,
+      })
+    );
+    assert.equal(result.response.status, 400, "the original error is not masked");
+  });
+
+  assert.equal(captured.length, 1, "no second POST for an unrelated provider");
+  assert.equal(
+    getLearnedReasoningEffort(PROVIDER, MODEL),
+    null,
+    "no cap is recorded from a probe that never ran"
+  );
+});
+
+test("an empty or blank provider list is treated as disabled", () => {
+  // beforeEach enables the probe for PROVIDER, so each value is set explicitly.
+  for (const value of ["", "   ", ",,"]) {
+    assert.equal(
+      withEnvSync(value, () => reasoningEffortProbeEnabled(PROVIDER)),
+      false,
+      JSON.stringify(value)
+    );
+  }
+});
+
+test("the opt-in matches the provider, case- and space-insensitively", () => {
+  const mixed = `  ${PROVIDER.toUpperCase()} , other-provider `;
+  assert.equal(
+    withEnvSync(mixed, () => reasoningEffortProbeEnabled(PROVIDER)),
+    true,
+    "a padded, differently-cased entry still matches"
+  );
+  assert.equal(
+    withEnvSync("some-other-provider", () => reasoningEffortProbeEnabled(PROVIDER)),
+    false,
+    "a provider that was not opted in stays off"
+  );
+});
+
+test("`*` enables the probe for every provider", () => {
+  assert.equal(
+    withEnvSync("*", () => reasoningEffortProbeEnabled("anything-at-all")),
+    true
+  );
+  assert.equal(
+    withEnvSync("openai, *", () => reasoningEffortProbeEnabled("anything-at-all")),
+    true,
+    "a wildcard alongside real entries still wins"
+  );
+});
+
+test("a null provider is never probed even under a wildcard-free list", () => {
+  assert.equal(
+    withEnvSync(PROVIDER, () => reasoningEffortProbeEnabled(null)),
+    false
+  );
+});
+
+/** Set the env var, read the result synchronously, restore. */
+function withEnvSync<T>(value: string, fn: () => T): T {
+  const saved = process.env[PROBE_ENV_KEY];
+  process.env[PROBE_ENV_KEY] = value;
+  try {
+    return fn();
+  } finally {
+    if (saved === undefined) delete process.env[PROBE_ENV_KEY];
+    else process.env[PROBE_ENV_KEY] = saved;
+  }
+}

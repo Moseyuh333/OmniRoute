@@ -26,13 +26,18 @@ import {
   parseReasoningEffortEnum,
   nextProbeReasoningEffort,
   recordLearnedProbeReasoningEffort,
+  reasoningEffortProbeEnabled,
 } from "../services/learnedReasoningEffortCaps.ts";
 import {
   getParamFilterConfig,
   addParamToBlocklist,
   isAutoLearnGloballyEnabled,
 } from "@/lib/db/paramFilters";
-import { applyFingerprint, isCliCompatEnabled, stripInternalBodyFields } from "../config/cliFingerprints.ts";
+import {
+  applyFingerprint,
+  isCliCompatEnabled,
+  stripInternalBodyFields,
+} from "../config/cliFingerprints.ts";
 import { supportsClaudeMaxEffort, supportsXHighEffort } from "../config/providerModels.ts";
 import { getThinkingBudgetConfig, ThinkingMode } from "../services/thinkingBudget.ts";
 import {
@@ -1610,13 +1615,17 @@ export class BaseExecutor {
                 response = await fetchWithStartTimeout(url, { ...fetchOptions, body: retryBody });
               }
             }
-          } else {
+          } else if (reasoningEffortProbeEnabled(this.provider)) {
             // No enum in the 4xx body — the upstream told us nothing we can
-            // record. Step down one tier and retry; if that retry is accepted we
-            // have PROOF of the ceiling (unlike the enum path, which trusts the
-            // upstream's own list) and can learn it for every later request.
-            // A failed probe changes nothing, so an upstream that refuses every
-            // tier still surfaces its original error.
+            // record, so there is also no way to tell an effort rejection from an
+            // unrelated validation failure. Opt in per provider
+            // (OMNIROUTE_REASONING_EFFORT_PROBE_PROVIDERS) rather than guess for
+            // everyone: a 2xx on the probe would otherwise mask the real error
+            // and record a cap nothing was proven against. When it is on, step
+            // down one tier and retry; if that probe is ANSWERED we have proof of
+            // that one tier, so record it and let every later request clamp up
+            // front. A failed probe changes nothing, so an upstream that refuses
+            // every tier still surfaces its own error.
             const probe = nextProbeReasoningEffort(readBodyReasoningEffort(transformedBody) ?? "");
             if (probe) {
               reasoningEffortClamped = true;
