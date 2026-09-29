@@ -1,6 +1,7 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { BaseExecutor } from "../../open-sse/executors/base.ts";
+import { applyReasoningEffortRecovery } from "../../open-sse/executors/base/reasoningEffortRecovery.ts";
 import {
   getLearnedReasoningEffort,
   nextProbeReasoningEffort,
@@ -417,6 +418,67 @@ function withEnvSync<T>(value: string, fn: () => T): T {
   process.env[PROBE_ENV_KEY] = value;
   try {
     return fn();
+  } finally {
+    if (saved === undefined) delete process.env[PROBE_ENV_KEY];
+    else process.env[PROBE_ENV_KEY] = saved;
+  }
+}
+
+// #14629 extracted the clamp-and-retry chain into applyReasoningEffortRecovery() so
+// executors that never call super.execute() (commandCode, cliproxyapi, glm) reach it.
+// The probe must live there too, or those callers keep 400ing on opaque bodies.
+test("applyReasoningEffortRecovery probes one tier down for direct callers", async () => {
+  const sent: Record<string, unknown>[] = [];
+  const recovery = await applyReasoningEffortRecovery({
+    response: new Response(OPAQUE_400_BODY, { status: 400 }),
+    url: "https://example.invalid/v1/chat/completions",
+    provider: PROVIDER,
+    model: MODEL,
+    body: { model: MODEL, reasoning_effort: "xhigh", messages: [] },
+    fetchOptions: { method: "POST" },
+    fetchFn: async (_url, init) => {
+      sent.push(JSON.parse(String(init.body)));
+      return new Response("{}", { status: 200 });
+    },
+  });
+
+  assert.equal(recovery.retried, true);
+  assert.equal(recovery.attempted, true);
+  assert.equal(recovery.response.status, 200);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].reasoning_effort, "high");
+  assert.deepEqual([...(getLearnedReasoningEffort(PROVIDER, MODEL) ?? [])], ["high"]);
+});
+
+test("applyReasoningEffortRecovery leaves an opaque 4xx alone when the probe is off", async () => {
+  let calls = 0;
+  const original = new Response(OPAQUE_400_BODY, { status: 400 });
+  const recovery = await withEnvAsync("", () =>
+    applyReasoningEffortRecovery({
+      response: original,
+      url: "https://example.invalid/v1/chat/completions",
+      provider: PROVIDER,
+      model: MODEL,
+      body: { model: MODEL, reasoning_effort: "xhigh", messages: [] },
+      fetchOptions: { method: "POST" },
+      fetchFn: async () => {
+        calls += 1;
+        return new Response("{}", { status: 200 });
+      },
+    })
+  );
+
+  assert.equal(calls, 0);
+  assert.equal(recovery.retried, false);
+  assert.equal(recovery.response, original);
+  assert.equal(getLearnedReasoningEffort(PROVIDER, MODEL), null);
+});
+
+async function withEnvAsync<T>(value: string, fn: () => Promise<T>): Promise<T> {
+  const saved = process.env[PROBE_ENV_KEY];
+  process.env[PROBE_ENV_KEY] = value;
+  try {
+    return await fn();
   } finally {
     if (saved === undefined) delete process.env[PROBE_ENV_KEY];
     else process.env[PROBE_ENV_KEY] = saved;
