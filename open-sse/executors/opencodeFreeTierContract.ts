@@ -197,10 +197,31 @@ const PLACEHOLDER_TOOL_DESCRIPTION =
 const PLACEHOLDER_TOOL_PARAMETERS = { type: "object", properties: {} } as const;
 
 /**
+ * The lowercase tool quartet the zen surface fingerprints.
+ *
+ * The upstream does not merely require `tools` to be non-empty: it inspects the declared
+ * names and casing. Measured live on 2026-10-02/03 across `/chat/completions` and
+ * `/responses` on 9 gated free models (121 records, independently reproduced in #15322):
+ * an empty list, a lone `_noop`, a single client tool, and the capitalised `Bash` spelling
+ * are all answered 403 FreeTierError, while `bash + read` — the smallest passing pair — and
+ * this quartet are answered 200. Order is irrelevant and extra tools alongside the quartet
+ * are accepted, which is why the caller's own entries are never renamed away: the four
+ * names are only ADDED when missing, so a client that spells one differently (`Bash` from
+ * Claude Code) keeps its own entry and gains the canonical one next to it.
+ */
+export const OPENCODE_FREE_TIER_FINGERPRINT_TOOLS = ["bash", "glob", "grep", "read"] as const;
+
+/** The quartet entries a body is still missing, caller entries untouched. */
+function missingFingerprintToolNames(existing: ReadonlySet<string>): string[] {
+  return OPENCODE_FREE_TIER_FINGERPRINT_TOOLS.filter((name) => !existing.has(name));
+}
+
+/**
  * Bring a free-tier request up to the upstream contract, without overriding anything the
- * caller already decided: client tools are kept as they are, and the placeholder tool is
- * only added when the caller sent none or when client-supplied tools do not yet carry the
- * required placeholder tool. Idempotent.
+ * caller already decided: client tools are kept as they are, and the entries the upstream
+ * fingerprints are only added when the caller's own list does not spell them exactly — the
+ * lowercase quartet first (see `OPENCODE_FREE_TIER_FINGERPRINT_TOOLS`), then the resolved
+ * placeholder names. Idempotent.
  *
  * The placeholder differs per surface: Chat Completions takes the nested function shape,
  * the Responses surface takes the flat one. Neither carries a `tool_choice` — the upstream
@@ -223,7 +244,16 @@ export function applyFreeTierRequestContract<T>(
 
   const existingNames = new Set(clientToolNamesOf(next));
   const baseNames = placeholderNames.length > 0 ? placeholderNames : [PLACEHOLDER_TOOL_NAME];
-  const namesToAdd = baseNames.filter((name) => !existingNames.has(name));
+  // The quartet goes in first: it is what the upstream fingerprints, so it is added whenever
+  // the caller's own list does not spell the four names exactly (a `Bash` from Claude Code
+  // counts as missing `bash`). The placeholder names stay additive afterwards, deduplicated
+  // against the quartet and against each other.
+  const namesToAdd: string[] = [];
+  for (const name of [...missingFingerprintToolNames(existingNames), ...baseNames]) {
+    if (existingNames.has(name)) continue;
+    existingNames.add(name);
+    namesToAdd.push(name);
+  }
 
   if (namesToAdd.length === 0) return next as T;
 
@@ -292,7 +322,16 @@ export function mergeClientToolsWithObserved<T>(
   const own = session ? getObservedToolNames(provider, model, session) : null;
   const observed = own ?? getObservedToolNames(provider, model) ?? configured;
   const have = new Set(clientToolNamesOf(body));
-  const missing = observed.filter((name) => !have.has(name));
+  // The quartet is mandatory on this surface too, and the first dispatch carried it whether
+  // or not the client did — so a refusal on the client's own names is retried with the quartet
+  // restored first, then the observed names, deduplicated in order.
+  const missing = missingFingerprintToolNames(have);
+  const declared = new Set([...have, ...missing]);
+  for (const name of observed) {
+    if (declared.has(name)) continue;
+    declared.add(name);
+    missing.push(name);
+  }
   if (missing.length === 0) return body;
   const next: Record<string, unknown> = { ...(record as Record<string, unknown>) };
   if (requestFormat === "openai-responses") {

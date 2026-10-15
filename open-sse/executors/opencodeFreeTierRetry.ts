@@ -3,6 +3,7 @@ import {
   configuredPlaceholderToolNames,
   isGatedFreeTierRequest,
   mergeClientToolsWithObserved,
+  OPENCODE_FREE_TIER_FINGERPRINT_TOOLS,
   type OpencodeSurface,
 } from "./opencodeFreeTierContract.ts";
 import { resolvePlaceholderNames } from "./opencodeToolObservation.ts";
@@ -98,6 +99,10 @@ function addsNothingBeyondFirstDispatch(
 ): boolean {
   const sent = new Set<string>([
     ...ctx.clientToolNames,
+    // The first dispatch always carried the quartet: the contract adds it to every gated
+    // body, so a retry that would only restore it re-sends a shape the upstream has just
+    // answered — nothing new to learn, one wasted round trip.
+    ...OPENCODE_FREE_TIER_FINGERPRINT_TOOLS,
     ...resolvePlaceholderNames(ctx.provider, model, ctx.clientSession, configured),
   ]);
   return toolNamesOf(merged).every((name) => sent.has(name));

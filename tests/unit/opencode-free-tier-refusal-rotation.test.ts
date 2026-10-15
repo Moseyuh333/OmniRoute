@@ -303,12 +303,12 @@ describe("OpencodeExecutor free-tier refusal retry with observed tools", () => {
     assert.strictEqual(seenTools.length, 2, "exactly one retry dispatch");
     assert.deepEqual(
       seenTools[0],
-      ["glob", "read", "bash"],
-      "first dispatch keeps client tools first, then the configured placeholders (#14156)"
+      ["glob", "read", "bash", "grep"],
+      "first dispatch keeps client tools first, then the required quartet and the placeholders (#14156)"
     );
     assert.deepEqual(
       seenTools[1],
-      ["glob", "read", "edit", "write", "bash"],
+      ["glob", "read", "bash", "grep", "edit", "write"],
       "retry appends observed names after client tools"
     );
     await result.response.body?.cancel();
@@ -345,7 +345,11 @@ describe("OpencodeExecutor free-tier refusal retry with observed tools", () => {
     });
 
     assert.strictEqual(result.response.status, 403);
-    assert.deepEqual(seenTools, [["glob", "read", "edit", "write"]], "one dispatch, no duplicate");
+    assert.deepEqual(
+      seenTools,
+      [["glob", "read", "bash", "grep", "edit", "write"]],
+      "one dispatch, no duplicate"
+    );
   });
 
   // Retry refusal: the ORIGINAL 403 is propagated and the store is untouched.

@@ -82,13 +82,17 @@ test("the surface is told apart by base url, so the `oc` alias needs no special 
   assert.equal(surfaceFromBaseUrl(undefined), "other");
 });
 
-test("chat completions: the contract adds streaming and a placeholder tool, and no tool_choice", () => {
+test("chat completions: the contract adds streaming and the required tool list, and no tool_choice", () => {
   const body = applyFreeTierRequestContract(CHAT_BODY(), "openai") as Record<string, unknown>;
   assert.equal(body.stream, true);
   const tools = body.tools as Array<{ type: string; function: { name: string } }>;
-  assert.equal(tools.length, 1);
+  assert.equal(tools.length, 5);
   assert.equal(tools[0].type, "function");
-  assert.equal(tools[0].function.name, "_noop");
+  // The quartet the upstream fingerprints comes first, the built-in placeholder after it.
+  assert.deepEqual(
+    tools.map((tool) => tool.function.name),
+    ["bash", "glob", "grep", "read", "_noop"]
+  );
   // The upstream answers 400 `only "auto" is supported for tool_choice` (measured
   // 2026-09-18 on the Chat Completions surface), so none is imposed here either.
   assert.equal("tool_choice" in body, false);
@@ -96,30 +100,31 @@ test("chat completions: the contract adds streaming and a placeholder tool, and 
 
 test("the placeholder carries the names it is given, one entry each", () => {
   const body = applyFreeTierRequestContract(CHAT_BODY(), "openai", [
-    "glob",
-    "grep",
-    "read",
+    "edit",
+    "write",
+    "webfetch",
   ]) as Record<string, unknown>;
   const tools = body.tools as Array<{ function: { name: string; parameters: object } }>;
   assert.deepEqual(
     tools.map((t) => t.function.name),
-    ["glob", "grep", "read"]
+    ["bash", "glob", "grep", "read", "edit", "write", "webfetch"]
   );
   // Names only: an empty parameter object, so a borrowed name is a list entry rather than
   // a tool the model could usefully call.
-  assert.deepEqual(tools[0].function.parameters, { type: "object", properties: {} });
+  assert.deepEqual(tools[4].function.parameters, { type: "object", properties: {} });
 });
 
 test("responses: several placeholder names keep the flat shape and no tool_choice", () => {
   const body = applyFreeTierRequestContract(RESPONSES_BODY(), "openai-responses", [
-    "glob",
-    "grep",
+    "edit",
+    "write",
   ]) as Record<string, unknown>;
   const tools = body.tools as Array<{ type: string; name: string }>;
   assert.deepEqual(
     tools.map((t) => t.name),
-    ["glob", "grep"]
+    ["bash", "glob", "grep", "read", "edit", "write"]
   );
+  for (const tool of tools) assert.equal(tool.type, "function");
   assert.equal("tool_choice" in body, false);
 });
 
@@ -130,10 +135,10 @@ test("an empty tools array counts as no tools", () => {
     string,
     unknown
   >;
-  assert.equal((body.tools as unknown[]).length, 1);
+  assert.equal((body.tools as unknown[]).length, 5);
 });
 
-test("responses: the placeholder tool is flat and tool_choice stays absent", () => {
+test("responses: the required tool list is flat and tool_choice stays absent", () => {
   // The upstream Responses surface rejects tool_choice with a 400 invalid_request_error
   // (measured on both "none" and {type:"none"}), so the contract must not send it there.
   const body = applyFreeTierRequestContract(RESPONSES_BODY(), "openai-responses") as Record<
@@ -142,13 +147,16 @@ test("responses: the placeholder tool is flat and tool_choice stays absent", () 
   >;
   assert.equal(body.stream, true);
   const tools = body.tools as Array<{ type: string; name: string }>;
-  assert.equal(tools.length, 1);
+  assert.equal(tools.length, 5);
   assert.equal(tools[0].type, "function");
-  assert.equal(tools[0].name, "_noop");
+  assert.deepEqual(
+    tools.map((t) => t.name),
+    ["bash", "glob", "grep", "read", "_noop"]
+  );
   assert.equal("tool_choice" in body, false);
 });
 
-test("client-supplied tools are never replaced, required placeholders are appended, and no tool_choice is imposed", () => {
+test("client-supplied tools are never replaced, required names are appended, and no tool_choice is imposed", () => {
   const clientTools = [
     { type: "function", function: { name: "search", parameters: { type: "object" } } },
   ];
@@ -157,16 +165,23 @@ test("client-supplied tools are never replaced, required placeholders are append
     "openai"
   ) as Record<string, unknown>;
   const tools = body.tools as Array<{ type: string; function?: { name: string } }>;
-  assert.equal(tools.length, 2);
+  assert.equal(tools.length, 6);
   assert.equal(tools[0].function?.name, "search");
-  assert.equal(tools[1].function?.name, "_noop");
+  assert.deepEqual(
+    tools.slice(1).map((t) => t.function?.name),
+    ["bash", "glob", "grep", "read", "_noop"]
+  );
   assert.equal("tool_choice" in body, false);
   assert.equal(body.stream, true);
 });
 
-test("when client-supplied tools already include placeholder tools, nothing extra is added", () => {
+test("when client-supplied tools already carry the required names, nothing extra is added", () => {
   const clientTools = [
     { type: "function", function: { name: "search", parameters: { type: "object" } } },
+    { type: "function", function: { name: "bash", parameters: { type: "object" } } },
+    { type: "function", function: { name: "glob", parameters: { type: "object" } } },
+    { type: "function", function: { name: "grep", parameters: { type: "object" } } },
+    { type: "function", function: { name: "read", parameters: { type: "object" } } },
     { type: "function", function: { name: "_noop", parameters: { type: "object" } } },
   ];
   const body = applyFreeTierRequestContract(
@@ -191,9 +206,11 @@ test("when client-supplied tools are present, multiple configured placeholders a
   const tools = body.tools as Array<{ type: string; function?: { name: string } }>;
   assert.equal(tools.length, 7);
   assert.equal(tools[0].function?.name, "run_code");
+  // The configured names already covered by the quartet are not duplicated: the quartet is
+  // declared once, and only `edit` and `write` are added on top of it.
   assert.deepEqual(
     tools.slice(1).map((t) => t.function?.name),
-    ["glob", "grep", "read", "edit", "write", "bash"]
+    ["bash", "glob", "grep", "read", "edit", "write"]
   );
 });
 
@@ -208,7 +225,7 @@ test("a client tool_choice is preserved", () => {
 test("applying the contract twice does not duplicate the placeholder tool", () => {
   const once = applyFreeTierRequestContract(CHAT_BODY(), "openai");
   const twice = applyFreeTierRequestContract(once, "openai") as Record<string, unknown>;
-  assert.equal((twice.tools as unknown[]).length, 1);
+  assert.equal((twice.tools as unknown[]).length, 5);
 });
 
 test("an unknown body format only gets the streaming flag", () => {
@@ -339,7 +356,7 @@ test("transformRequest: the contract is applied for a free model and skipped for
     null as never
   ) as Record<string, unknown>;
   assert.equal(free.stream, true);
-  assert.equal((free.tools as unknown[]).length, 1);
+  assert.equal((free.tools as unknown[]).length, 5);
 
   const paid = executor.transformRequest(
     "gpt-5.6-luna",
@@ -381,7 +398,11 @@ test("a JSON caller gets a JSON body back even though the upstream request was s
     })) as { response: Response };
 
     assert.equal(seen[0]?.stream, true, "the upstream request was streamed");
-    assert.equal((seen[0]?.tools as unknown[]).length, 1, "and carried the placeholder tool");
+    assert.equal(
+      (seen[0]?.tools as unknown[]).length,
+      5,
+      "and carried the required tool list plus the placeholder"
+    );
     assert.match(result.response.headers.get("content-type") ?? "", /application\/json/);
     const json = (await result.response.json()) as {
       choices?: Array<{ message?: { content?: string } }>;
@@ -511,7 +532,7 @@ test("with nothing observed and nothing configured, the built-in placeholder is 
   const tools = (body as Record<string, unknown>).tools as Array<{ function: { name: string } }>;
   assert.deepEqual(
     tools.map((t) => t.function.name),
-    ["_noop"]
+    ["bash", "glob", "grep", "read", "_noop"]
   );
   // Nothing was borrowed, so a refusal here must not be charged against the store.
   assert.equal(attempt?.borrowed, false);
@@ -522,8 +543,8 @@ test("an accepted request teaches the names it carried, and a later bare request
   const withTools = {
     ...CHAT_BODY(),
     tools: [
-      { type: "function", function: { name: "glob" } },
-      { type: "function", function: { name: "grep" } },
+      { type: "function", function: { name: "webfetch" } },
+      { type: "function", function: { name: "websearch" } },
     ],
   };
   const first = prepareFreeTierRequest(
@@ -533,11 +554,11 @@ test("an accepted request teaches the names it carried, and a later bare request
     "opencode",
     "nemotron-3.5-lightning-free"
   );
-  assert.deepEqual(first.attempt?.clientToolNames, ["glob", "grep"]);
+  assert.deepEqual(first.attempt?.clientToolNames, ["webfetch", "websearch"]);
   noteFreeTierOutcome(first.attempt, true);
   assert.deepEqual(getObservedToolNames("opencode", "nemotron-3.5-lightning-free"), [
-    "glob",
-    "grep",
+    "webfetch",
+    "websearch",
   ]);
 
   const second = prepareFreeTierRequest(
@@ -550,9 +571,10 @@ test("an accepted request teaches the names it carried, and a later bare request
   const tools = (second.body as Record<string, unknown>).tools as Array<{
     function: { name: string };
   }>;
+  // The quartet is mandatory on every gated body, so the borrowed names ride along with it.
   assert.deepEqual(
     tools.map((t) => t.function.name),
-    ["glob", "grep"]
+    ["bash", "glob", "grep", "read", "webfetch", "websearch"]
   );
   assert.equal(second.attempt?.borrowed, true);
 });
@@ -694,8 +716,8 @@ test("a session's service request borrows the list its own build request declare
     {
       ...CHAT_BODY(),
       tools: [
-        { type: "function", function: { name: "glob" } },
-        { type: "function", function: { name: "grep" } },
+        { type: "function", function: { name: "webfetch" } },
+        { type: "function", function: { name: "websearch" } },
       ],
     },
     "openai",
@@ -719,7 +741,7 @@ test("a session's service request borrows the list its own build request declare
   }>;
   assert.deepEqual(
     tools.map((t) => t.function.name),
-    ["glob", "grep"]
+    ["bash", "glob", "grep", "read", "webfetch", "websearch"]
   );
   assert.equal(title.attempt?.borrowed, true);
 });
@@ -761,7 +783,7 @@ test("a session's own list wins over the shared one", () => {
   }>;
   assert.deepEqual(
     tools.map((t) => t.function.name),
-    ["own"]
+    ["bash", "glob", "grep", "read", "own"]
   );
 });
 
@@ -791,7 +813,7 @@ test("a session that has declared nothing yet falls back to the shared entry", (
   }>;
   assert.deepEqual(
     tools.map((t) => t.function.name),
-    ["shared"]
+    ["bash", "glob", "grep", "read", "shared"]
   );
 });
 
@@ -803,7 +825,7 @@ test("a client session id is read case-insensitively, a synthesized one is not b
   assert.equal(clientSuppliedOpencodeSession(undefined), undefined);
 });
 
-test("mergeClientToolsWithObserved: keeps client tools first and appends missing observed names with empty schemas [free-tier-observed-tools]", () => {
+test("mergeClientToolsWithObserved: keeps client tools first and appends the required names with empty schemas [free-tier-observed-tools]", () => {
   _resetToolObservationForTests();
   const body = {
     ...CHAT_BODY(),
@@ -819,23 +841,48 @@ test("mergeClientToolsWithObserved: keeps client tools first and appends missing
   const tools = (merged as Record<string, unknown>).tools as Array<{
     function: { name: string; parameters: object };
   }>;
+  // The client keeps its two entries first; the two quartet members it does not spell are
+  // restored before the observed name.
   assert.deepEqual(
     tools.map((t) => t.function.name),
-    ["glob", "read", "edit"]
+    ["glob", "read", "bash", "grep", "edit"]
   );
   // Appended entries are list entries, not callable tools.
-  assert.deepEqual(tools[2].function.parameters, { type: "object", properties: {} });
+  assert.deepEqual(tools[4].function.parameters, { type: "object", properties: {} });
 });
 
-test("mergeClientToolsWithObserved: leaves the body untouched when nothing observed [free-tier-observed-tools]", () => {
+test("mergeClientToolsWithObserved: restores the quartet when missing, keeps an already-complete body [free-tier-observed-tools]", () => {
   _resetToolObservationForTests();
-  const body = {
+  const complete = {
+    ...CHAT_BODY(),
+    tools: [
+      { type: "function", function: { name: "bash", parameters: { type: "object" } } },
+      { type: "function", function: { name: "glob", parameters: { type: "object" } } },
+      { type: "function", function: { name: "grep", parameters: { type: "object" } } },
+      { type: "function", function: { name: "read", parameters: { type: "object" } } },
+    ],
+  };
+  assert.equal(
+    mergeClientToolsWithObserved(complete, "openai", "opencode", "big-pickle", undefined, []),
+    complete,
+    "nothing observed and nothing missing: the caller can skip the retry on identity"
+  );
+
+  const partial = {
     ...CHAT_BODY(),
     tools: [{ type: "function", function: { name: "glob", parameters: { type: "object" } } }],
   };
-  assert.equal(
-    mergeClientToolsWithObserved(body, "openai", "opencode", "big-pickle", undefined, []),
-    body
+  const merged = mergeClientToolsWithObserved(
+    partial,
+    "openai",
+    "opencode",
+    "big-pickle",
+    undefined,
+    []
+  ) as Record<string, unknown>;
+  assert.deepEqual(
+    (merged.tools as Array<{ function: { name: string } }>).map((t) => t.function.name),
+    ["glob", "bash", "grep", "read"]
   );
 });
 

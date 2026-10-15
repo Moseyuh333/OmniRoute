@@ -1361,6 +1361,7 @@ export class OpencodeExecutor extends BaseExecutor {
         cliDefaults,
         keepAgentUserAgent: this._surface() === "go" && !gatedScope, // #15311
         sessionBody: projectOpencodeSessionBody(body),
+        reencodeSession: gatedScope, // #16571: the free tier decodes the session's value
       });
     }
 

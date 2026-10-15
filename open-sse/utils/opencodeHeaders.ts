@@ -19,6 +19,23 @@ export const OPENCODE_SESSION_PATTERN = /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/;
 /** Same shape for the request id, which the upstream accepts but does not validate. */
 export const OPENCODE_REQUEST_PATTERN = /^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/;
 
+/**
+ * Same shape, and the VALUE the zen free tier decodes back.
+ *
+ * The 12 hex digits are read through the client's `Identifier.descending()` layout, where the
+ * low 12 bits carry `0xFFF - counter` (counter is the within-millisecond sequence). Only a
+ * low-12 landing in `0xFC0-0xFFF` — counter 0-63 — passes; a shape-valid id from another
+ * scheme (raw hash, ascending id, counter out of window) is answered `403 FreeTierError` like
+ * a missing one (measured 2026-10-13/14, #16328). `OPENCODE_SESSION_PATTERN` alone cannot
+ * tell the two apart, so the gated path checks this one.
+ */
+export const OPENCODE_SESSION_VALUE_PATTERN = /^ses_[0-9a-f]{9}f[c-f][0-9a-f][0-9A-Za-z]{14}$/;
+
+/** Whether a session id carries the encoding the zen free tier decodes (not just its shape). */
+export function isCanonicalOpencodeSessionValue(sessionId: string | null | undefined): boolean {
+  return OPENCODE_SESSION_VALUE_PATTERN.test(String(sessionId ?? "").trim());
+}
+
 const MINIMUM_USER_AGENT_MINOR = 17;
 const USER_AGENT_VERSION_RE = /opencode\/(?:[a-z]+\/)?v?(\d+)\.(\d+)/i;
 
@@ -99,19 +116,51 @@ function base62From(bytes: Buffer, length: number): string {
   return Array.from(bytes.subarray(0, length), (byte) => BASE62[byte % 62]).join("");
 }
 
+/** Counter OpenCode's `Identifier.descending()` inverts; 0-63 is the window the gate accepts. */
+const OPENCODE_SESSION_COUNTER = 1n;
+/** The inverted 48-bit field the 12 hex digits render. */
+const OPENCODE_SESSION_LOW_48_MASK = 0xffffffffffffn;
+/** 36 bits of timestamp: 48 bits minus the 12 the counter owns. */
+const OPENCODE_SESSION_TS36_MASK = 0xfffffffffn;
+
+/**
+ * Render the 12 hex digits the way the client's `Identifier.descending()` does:
+ * `~(timestamp36 << 12 | counter)` over 48 bits, most-significant nibble first.
+ *
+ * The counter is pinned to 1 — the deterministic stand-in for the client's per-millisecond
+ * sequence — so the whole id stays a pure function of the seed and one conversation keeps
+ * one upstream session (prompt-cache affinity). The timestamp half is taken from the top 36
+ * bits of the seed's hash: the upstream does not check that the timestamp is a real clock
+ * reading, only the counter window the inverted low 12 bits land in.
+ */
+function descendingTimeHex(bytes: Buffer): string {
+  const ts36 =
+    ((BigInt(bytes[0]) << 28n) |
+      (BigInt(bytes[1]) << 20n) |
+      (BigInt(bytes[2]) << 12n) |
+      (BigInt(bytes[3]) << 4n) |
+      (BigInt(bytes[4]) >> 4n)) &
+    OPENCODE_SESSION_TS36_MASK;
+  const value = ~((ts36 << 12n) | OPENCODE_SESSION_COUNTER) & OPENCODE_SESSION_LOW_48_MASK;
+  return value.toString(16).padStart(12, "0");
+}
+
 /**
  * Render an id in the canonical OpenCode shape (`<prefix>` + 12 hex + 14 base62).
  *
- * The upstream checks the shape and not the value: 12 arbitrary hex digits pass, so
- * there is no need to reproduce the client's own id algorithm (timestamp plus counter).
- * With a seed the result is deterministic, which is what keeps a conversation on one
- * upstream session — and therefore keeps prompt caching warm — across requests.
+ * For `ses_` the hex half must also carry the client's `Identifier.descending()` encoding,
+ * because the zen free tier decodes it and refuses a value outside the counter window
+ * (`OPENCODE_SESSION_VALUE_PATTERN`). With a seed the result is deterministic, which is what
+ * keeps a conversation on one upstream session — and therefore keeps prompt caching warm —
+ * across requests. `msg_` ids are not value-checked upstream, so they keep the plain render.
  */
 function canonicalId(prefix: "ses_" | "msg_", seed?: string): string {
   const bytes = seed
     ? createHash("sha256").update(`opencode\u0000${prefix}\u0000${seed}`).digest()
     : randomBytes(32);
-  return `${prefix}${bytes.subarray(0, 6).toString("hex")}${base62From(bytes.subarray(6), 14)}`;
+  const timePart =
+    prefix === "ses_" ? descendingTimeHex(bytes) : bytes.subarray(0, 6).toString("hex");
+  return `${prefix}${timePart}${base62From(bytes.subarray(6), 14)}`;
 }
 
 /**
@@ -175,6 +224,11 @@ function findHeader(headers: Record<string, string>, name: string): string | und
  *   conversation-stable session fingerprint (model, system, messages or input, tools).
  *   When provided, x-opencode-session is a deterministic hash instead of a random
  *   UUID, so upstream prompt caching hits across requests in the same conversation.
+ * @param options.reencodeSession - Zen free tier only (#16571/#16328): the upstream decodes
+ *   `x-opencode-session` and refuses a value outside the client's counter window, so a
+ *   caller value that only matches the SHAPE is re-minted from its own value (same
+ *   conversation, same session, canonical encoding). Gated surfaces only: `opencode-go` and
+ *   paid models keep the caller's session untouched (#15311).
  */
 export function forwardOpencodeClientHeaders(
   headers: Record<string, string>,
@@ -185,6 +239,7 @@ export function forwardOpencodeClientHeaders(
     keepAgentUserAgent?: boolean;
     sessionBody?: OpencodeSessionBody;
     forwardUserAgent?: boolean;
+    reencodeSession?: boolean;
   }
 ): void {
   // 1. Forward User-Agent (opt-out for generic providers, #15632)
@@ -221,7 +276,8 @@ export function forwardOpencodeClientHeaders(
       headers,
       options.cliDefaults,
       options.sessionBody,
-      options.keepAgentUserAgent === true
+      options.keepAgentUserAgent === true,
+      options.reencodeSession === true
     );
   }
 }
@@ -266,7 +322,8 @@ function applyCliDefaults(
   headers: Record<string, string>,
   cliDefaults: { userAgent: string; client: string; project: string },
   sessionBody?: OpencodeSessionBody,
-  keepAgentUserAgent = false
+  keepAgentUserAgent = false,
+  reencodeSession = false
 ): void {
   if (!keepsClientUserAgent(headers["User-Agent"] || headers["user-agent"], keepAgentUserAgent)) {
     setUserAgentHeader(headers, cliDefaults.userAgent);
@@ -281,9 +338,15 @@ function applyCliDefaults(
     clientRequestId && OPENCODE_REQUEST_PATTERN.test(clientRequestId)
       ? clientRequestId
       : canonicalId("msg_", clientRequestId || undefined);
+  // On the gated path the shape is not enough: a client session whose encoded value sits
+  // outside the counter window is refused by the upstream exactly like a missing one, so it
+  // is re-minted from the client's own value (one conversation, one stable session).
   const clientSessionId = headers["x-opencode-session"]?.trim();
+  const keepsClientSession = reencodeSession
+    ? isCanonicalOpencodeSessionValue(clientSessionId)
+    : Boolean(clientSessionId && OPENCODE_SESSION_PATTERN.test(clientSessionId));
   headers["x-opencode-session"] = clientSessionId
-    ? OPENCODE_SESSION_PATTERN.test(clientSessionId)
+    ? keepsClientSession
       ? clientSessionId
       : canonicalId("ses_", clientSessionId)
     : canonicalId("ses_", generateSessionId(sessionBody ?? null) ?? undefined);
