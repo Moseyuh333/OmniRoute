@@ -292,26 +292,8 @@ sentence _"OpenCode's free tier can only be used from within OpenCode"_. This is
 request-scoped refusal (same verdict on every account for the same request shape), not a
 model ban or connection cooldown — OmniRoute classifies it as `project_route_error`, skips
 model lockout / cooldown, and (on the synthetic `noauth` path) pauses auto-combo re-selection
-for a short TTL.
-
-The gate has four legs, and the last two are narrower than they look:
-
-1. `stream: true`.
-2. A `tools` list that declares the lowercase quartet `bash`, `glob`, `grep`, `read`. It is a
-   fingerprint, not a non-empty check: measured live on 2026-10-02/03 over `/chat/completions`
-   and `/responses` on 9 gated free models, an empty list, a lone `_noop` placeholder, a
-   single client tool and the capitalised `Bash` spelling are all answered 403, while the
-   quartet is answered 200. Order is irrelevant and extra tools beside the quartet are
-   accepted, so a caller's own entries are never renamed away.
-3. An `x-opencode-session` whose 12 hex digits decode through the client's
-   `Identifier.descending()` layout into the counter window `0xFC0-0xFFF` (counter 0-63). A
-   shape-valid id from another scheme — a raw hash, an ascending id, a counter out of window —
-   is refused like a missing one (measured 2026-10-13/14).
-4. A `User-Agent` containing `opencode/<version >= 1.17>`; a lower version answers 426.
-
-OmniRoute synthesizes all four for a caller that arrives without them
-(`opencodeFreeTierContract.ts` for the body, `opencodeHeaders.ts` for the session), which is
-what makes the provider usable from any client rather than only from the OpenCode CLI.
+for a short TTL. Ship requests that carry a non-empty tool list, `stream: true`, and the
+OpenCode session/UA headers (`opencodeFreeTierContract.ts`) or expect the 403.
 
 ## What changed since the shipped catalog (`freeNote`)
 

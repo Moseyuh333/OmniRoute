@@ -1370,8 +1370,6 @@ export class OpencodeExecutor extends BaseExecutor {
     // to overwrite is accepted on that surface (measured 2026-09-17, 200 on
     // muse-spark-1.3-contributor-free via /v1/responses).
 
-    void model;
-
     return headers;
   }
 
